@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Explorador de Marte - Babylon.js</title>
+    <style>
+        html,
+        body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background: black;
+        }
+
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+    </style>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+</head>
+
+<body>
+    <canvas id="renderCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+
+        let scene, rover, orbitCamera, roverCamera;
+        let rocks = [];
+        let keys = {};
+        let roverSamples = 0;
+        let deliveredSamples = 0;
+        let baseRoot = null;
+        let basePad = null;
+
+        const TOTAL_ROCKS = 5;
+        const BASE_RADIUS = 15;
+        let uiTextRover, uiTextBase, uiTextInfo, uiTextTitle, uiTextMission;
+
+        async function createScene() {
+            scene = new BABYLON.Scene(engine);
+
+            // Cielo 
+            scene.clearColor = new BABYLON.Color3(0.82, 0.47, 0.28);
+
+            // Niebla 
+            scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+            scene.fogColor = new BABYLON.Color3(0.82, 0.47, 0.28);
+            scene.fogDensity = 0.0045;
+
+            // --- CÁMARAS ---
+            orbitCamera = new BABYLON.ArcRotateCamera(
+                "orbitCam",
+                -Math.PI / 2,
+                Math.PI / 3,
+                80,
+                new BABYLON.Vector3(0, 10, 0),
+                scene
+            );
+            orbitCamera.lowerBetaLimit = 0.1;
+            orbitCamera.upperBetaLimit = Math.PI / 2;
+            orbitCamera.attachControl(canvas, true);
+
+            roverCamera = new BABYLON.UniversalCamera(
+                "roverCam",
+                new BABYLON.Vector3(0, 3, -10),
+                scene
+            );
+            roverCamera.minZ = 0.1;
+            scene.activeCamera = orbitCamera;
+
+            // --- LUCES ---
+            const hemiLight = new BABYLON.HemisphericLight(
+                "hemiLight",
+                new BABYLON.Vector3(0, 1, 0),
+                scene
+            );
+            hemiLight.intensity = 0.8;
+            hemiLight.diffuse = new BABYLON.Color3(1.0, 0.8, 0.6);
+            hemiLight.groundColor = new BABYLON.Color3(0.3, 0.15, 0.1);
+
+            const sunLight = new BABYLON.DirectionalLight(
+                "sunLight",
+                new BABYLON.Vector3(-0.3, -1, 0.2),
+                scene
+            );
+            sunLight.intensity = 1.2;
+            sunLight.diffuse = new BABYLON.Color3(1.0, 0.85, 0.7);
+
+            // --- CIELO 360° ---
+            const skyCylinder = BABYLON.MeshBuilder.CreateCylinder(
+                "skyCylinder",
+                {
+                    height: 400,
+                    diameter: 2600,
+                    tessellation: 48,
+                    sideOrientation: BABYLON.Mesh.BACKSIDE
+                },
+                scene
+            );
+            const skyCylMat = new BABYLON.StandardMaterial("skyCylMat", scene);
+            skyCylMat.diffuseTexture = new BABYLON.Texture("./textures/space/Rojizo.jpg", scene);
+            skyCylMat.diffuseTexture.uScale = 1;
+            skyCylMat.diffuseTexture.vScale = 1;
+            skyCylMat.specularColor = new BABYLON.Color3(0, 0, 0);
+            skyCylMat.backFaceCulling = false;
+            skyCylinder.material = skyCylMat;
+            skyCylinder.position.y = 120;
+
+            // --- SUELO ---
+            const ground = BABYLON.MeshBuilder.CreateGround(
+                "ground",
+                { width: 2000, height: 2000, subdivisions: 200 },
+                scene
+            );
+            const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+
+            // Textura del suelo
+            groundMat.diffuseTexture = new BABYLON.Texture(
+                "./textures/marte/suelo.jpg",
+                scene
+            );
+            groundMat.diffuseTexture.uScale = 50;
+            groundMat.diffuseTexture.vScale = 50;
+
+            // Relieve del suelo
+            groundMat.bumpTexture = new BABYLON.Texture(
+                "./textures/marte/superficie.jpg",
+                scene
+            );
+            groundMat.bumpTexture.level = 1.0;
+
+            groundMat.specularColor = new BABYLON.Color3(0, 0, 0);
+            ground.material = groundMat;
+
+            // ---------- BASE (modelo cápsula + pad de entrega) ----------
+            await createBase(scene);
+
+
+            // --- ROVER ESCENARIO ---
+            rover = await createRover(scene);
+            roverCamera.position = rover.position.add(new BABYLON.Vector3(0, 4, -12));
+            roverCamera.lockedTarget = rover;
+
+            // --- ROCAS ---
+            createRocks(scene);
+
+            // --- HUD ---
+            createUI(scene);
+
+            // --- CONTROLES ---
+            window.addEventListener("keydown", (event) => {
+                const key = event.key.toLowerCase();
+                if (!keys[key]) {
+                    keys[key] = true;
+                    if (key === "c") {
+                        toggleCamera();
+                    }
+                }
+            });
+
+            window.addEventListener("keyup", (event) => {
+                keys[event.key.toLowerCase()] = false;
+            });
+
+            // --- LOOP LÓGICO ---
+            scene.onBeforeRenderObservable.add(() => {
+                const deltaTime = engine.getDeltaTime() / 1000;
+                updateRoverMovement(deltaTime);
+                updateGameLogic(deltaTime, basePad.position);
+            });
+
+            return scene;
+        }
+
+        // ---------- BASE (cápsula visible + pad invisible) ----------
+        let baseMesh = null;
+        async function createBase(scene) {
+            basePad = BABYLON.MeshBuilder.CreateCylinder(
+                "basePad",
+                { diameter: BASE_RADIUS * 2, height: 0.3 },
+                scene
+            );
+            basePad.position = new BABYLON.Vector3(0, 0.15, 0);
+            basePad.visibility = 0.3;
+
+            const result = await BABYLON.SceneLoader.ImportMeshAsync(
+                "",
+                "./Modelos/",
+                "capsule.glb",   // o capsula.glb, como se llame tu archivo
+                scene
+            );
+
+            baseMesh = result.meshes[0];
+
+            result.meshes.forEach(m => {
+                m.applyFog = false;
+            });
+
+            baseMesh.scaling = new BABYLON.Vector3(1.0, 1.0, 1.0);
+
+            baseMesh.position = basePad.position.clone();
+
+            baseMesh.computeWorldMatrix(true);
+            const bounds = baseMesh.getHierarchyBoundingVectors();
+            baseMesh.position.y -= bounds.min.y;
+        }
+
+        // ---------- ROVER modelo ----------
+        async function createRover(scene) {
+            if (!scene.environmentTexture) {
+                scene.environmentTexture = BABYLON.CubeTexture.CreateFromPrefilteredData(
+                    "https://assets.babylonjs.com/environments/environmentSpecular.env",
+                    scene
+                );
+                scene.environmentIntensity = 1.2;
+            }
+
+            const result = await BABYLON.SceneLoader.ImportMeshAsync(
+                "",
+                "./Modelos/",
+                "rover.glb",
+                scene
+            );
+
+            const roverRoot = result.meshes[0];
+
+            // Apagar niebla en todas las partes del rover
+            result.meshes.forEach(m => {
+                m.applyFog = false;
+            });
+
+            roverRoot.position = new BABYLON.Vector3(0, 0, -15);
+
+            roverRoot.scaling = new BABYLON.Vector3(2.5, 2.5, 2.5);
+ 
+            roverRoot.rotation = new BABYLON.Vector3(0, Math.PI, 0);
+
+            return roverRoot;
+        }
+        // ---------- ROCAS ----------
+        async function createRocks(scene) {
+            for (let i = 0; i < TOTAL_ROCKS; i++) {
+
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 40 + Math.random() * 90;
+                const x = Math.cos(angle) * radius;
+                const z = Math.sin(angle) * radius;
+
+                const result = await BABYLON.SceneLoader.ImportMeshAsync(
+                    "",
+                    "./Modelos/",
+                    "rocas.glb",    
+                    scene
+                );
+
+                const rockRoot = new BABYLON.TransformNode("rockRoot", scene);
+
+                result.meshes.forEach(m => {
+                    m.applyFog = false;
+                    if (m !== rockRoot) {
+                        m.parent = rockRoot;
+                    }
+                });
+
+                rockRoot.position = new BABYLON.Vector3(x, 0.3, z);
+
+                const s = 0.4 + Math.random() * 0.4;
+                rockRoot.scaling = new BABYLON.Vector3(s, s, s);
+
+                rockRoot.metadata = { collected: false };
+                rocks.push(rockRoot);
+            }
+        }
+
+
+        // ---------- HUD ----------
+        function createUI(scene) {
+            const ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
+
+            uiTextTitle = new BABYLON.GUI.TextBlock();
+            uiTextTitle.text = "Explorador de Marte";
+            uiTextTitle.color = "white";
+            uiTextTitle.fontSize = 26;
+            uiTextTitle.top = "-45%";
+            uiTextTitle.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+            uiTextTitle.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+            ui.addControl(uiTextTitle);
+
+            uiTextMission = new BABYLON.GUI.TextBlock();
+            uiTextMission.text = "Recoge las rocas y llévalas a la base.";
+            uiTextMission.color = "white";
+            uiTextMission.fontSize = 18;
+            uiTextMission.top = "-40%";
+            uiTextMission.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+            uiTextMission.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+            ui.addControl(uiTextMission);
+
+            uiTextRover = new BABYLON.GUI.TextBlock();
+            uiTextRover.text = "En el rover: 0";
+            uiTextRover.color = "white";
+            uiTextRover.fontSize = 18;
+            uiTextRover.top = "-47%";
+            uiTextRover.left = "-40%";
+            uiTextRover.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+            uiTextRover.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+            ui.addControl(uiTextRover);
+
+            uiTextBase = new BABYLON.GUI.TextBlock();
+            uiTextBase.text = "Entregadas: 0 / " + TOTAL_ROCKS;
+            uiTextBase.color = "white";
+            uiTextBase.fontSize = 18;
+            uiTextBase.top = "-43%";
+            uiTextBase.left = "-40%";
+            uiTextBase.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+            uiTextBase.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+            ui.addControl(uiTextBase);
+
+            uiTextInfo = new BABYLON.GUI.TextBlock();
+            uiTextInfo.text = "Controles: W/A/S/D moverse, C cambiar cámara, E recoger rocas.";
+            uiTextInfo.color = "white";
+            uiTextInfo.fontSize = 16;
+            uiTextInfo.top = "45%";
+            uiTextInfo.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+            uiTextInfo.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+            ui.addControl(uiTextInfo);
+        }
+
+        // ---------- CÁMARA ----------
+        function toggleCamera() {
+            if (scene.activeCamera === orbitCamera) {
+                roverCamera.position = rover.position.add(new BABYLON.Vector3(0, 4, -12));
+                roverCamera.lockedTarget = rover;
+                roverCamera.attachControl(canvas, true);
+                scene.activeCamera = roverCamera;
+            } else {
+                orbitCamera.attachControl(canvas, true);
+                scene.activeCamera = orbitCamera;
+            }
+        }
+
+        // ---------- MOVIMIENTO ----------
+        function updateRoverMovement(deltaTime) {
+            const speed = 20;
+            const rotationSpeed = 1.8;
+            if (!rover) return;
+
+            if (keys["a"]) rover.rotation.y -= rotationSpeed * deltaTime;
+            if (keys["d"]) rover.rotation.y += rotationSpeed * deltaTime;
+
+            const forward = new BABYLON.Vector3(
+                Math.sin(rover.rotation.y), 0, Math.cos(rover.rotation.y)
+            );
+
+            let moveDir = BABYLON.Vector3.Zero();
+            if (keys["w"]) moveDir = moveDir.add(forward);
+            if (keys["s"]) moveDir = moveDir.subtract(forward);
+
+            if (!moveDir.equals(BABYLON.Vector3.Zero())) {
+                moveDir = moveDir.normalize().scale(speed * deltaTime);
+                const desiredPosition = rover.position.add(moveDir);
+
+                // --- COLISIÓN CON LA BASE ---
+                if (baseMesh) {
+                    const roverRadius = 3.5;  // Ajusta si el modelo es más grande/pequeño
+                    const minDistance = 10;   // Radio de colisión de la base (ajustable)
+
+                    const dist = BABYLON.Vector3.Distance(
+                        desiredPosition,
+                        new BABYLON.Vector3(baseMesh.position.x, 0, baseMesh.position.z)
+                    );
+
+                    if (dist > minDistance + roverRadius) {
+                        // Movimiento permitido
+                        rover.position = desiredPosition;
+                    } 
+                    } else {
+                    rover.position = desiredPosition;
+                }
+
+
+                if (scene.activeCamera === roverCamera) {
+                    const offset = new BABYLON.Vector3(0, 4, -12);
+                    const q = BABYLON.Quaternion.FromEulerAngles(0, rover.rotation.y, 0);
+                    const desiredPosition = rover.position.add(
+                        offset.rotateByQuaternionToRef(q, new BABYLON.Vector3())
+                    );
+                    roverCamera.position = BABYLON.Vector3.Lerp(
+                        roverCamera.position,
+                        desiredPosition,
+                        0.15
+                    );
+                }
+            }
+        }
+
+        // ---------- LÓGICA JUEGO ----------
+        function updateGameLogic(deltaTime, basePosition) {
+            if (!rover) return;
+
+            let nearRock = null;
+            let minDist = 9999;
+
+            for (const rock of rocks) {
+                if (rock.metadata.collected) continue;
+                const dist = BABYLON.Vector3.Distance(rock.position, rover.position);
+                if (dist < 5 && dist < minDist) {
+                    minDist = dist;
+                    nearRock = rock;
+                }
+            }
+
+            if (nearRock) {
+                uiTextInfo.text = "Roca cercana. Presiona E para recoger. (W/A/S/D, C cámara)";
+                if (keys["e"]) {
+                    if (roverSamples >= 3) {
+                        uiTextInfo.text = "No puedes recoger más rocas. Llévalas a la base.";
+                        return;
+                    }
+                    nearRock.metadata.collected = true;
+                    nearRock.setEnabled(false);
+                    nearRock.isVisible = false;
+                    roverSamples++;
+                    uiTextRover.text = "En el rover: " + roverSamples;
+                }
+            } else {
+                uiTextInfo.text = "Controles: W/A/S/D moverse, C cambiar cámara, E recoger rocas.";
+            }
+
+            const distToBase = BABYLON.Vector3.Distance(
+                new BABYLON.Vector3(rover.position.x, 0, rover.position.z),
+                new BABYLON.Vector3(basePosition.x, 0, basePosition.z)
+            );
+
+            if (distToBase < BASE_RADIUS && roverSamples > 0) {
+                deliveredSamples += roverSamples;
+                roverSamples = 0;
+                uiTextRover.text = "En el rover: " + roverSamples;
+                uiTextBase.text = "Entregadas: " + deliveredSamples + " / " + TOTAL_ROCKS;
+
+                if (deliveredSamples >= TOTAL_ROCKS) {
+                    uiTextMission.text = "¡Misión completada! Has entregado todas las muestras.";
+                    uiTextMission.color = "lightgreen";
+                } else {
+                    uiTextMission.text = "Buen trabajo. Sigue recogiendo más rocas.";
+                    uiTextMission.color = "white";
+                }
+            }
+        }
+
+        // ---------- INICIO ----------
+        createScene().then(() => {
+            engine.runRenderLoop(() => {
+                if (scene) scene.render();
+            });
+        });
+
+
+        window.addEventListener("resize", () => {
+            engine.resize();
+        });
+    </script>
+</body>
+
+</html>
