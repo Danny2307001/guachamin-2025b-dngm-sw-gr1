@@ -2,9 +2,9 @@
 ### *Psychological Horror Narrative Game*
 
 > **Proyecto Final — Diseño de Videojuegos, Arquitectura y Análisis**
-> **Autores: 
-Guachamin Daniela
-Armijo Marlow
+> **Autores:**  
+> - Guachamín Daniela  
+> - Armijo Marlow  
 
 ---
 
