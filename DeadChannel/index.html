@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dead Channel - Vertical Slice (Babylon.js)</title>
+
+  <link rel="stylesheet" href="./style.css" />
+
+  <!-- Babylon.js -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+</head>
+
+<body>
+  <!-- IMPORTANTÍSIMO: tabindex permite que el canvas reciba teclado -->
+  <canvas id="renderCanvas" tabindex="0"></canvas>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="hint" class="hidden">Presiona <b>E</b> para interactuar</div>
+  </div>
+
+  <!-- Diálogo -->
+  <div id="dialog" class="hidden">
+    <div id="dialogBox">
+      <div id="speaker">Interferencia</div>
+      <div id="text"></div>
+
+      <div id="choices">
+        <button id="choiceA">Seguir la voz</button>
+        <button id="choiceB">Ignorar la voz</button>
+      </div>
+
+      <div id="smallHint">ESC para cerrar</div>
+    </div>
+  </div>
+
+  <!-- Pantalla final -->
+  <div id="end" class="hidden">
+    <div id="endBox">
+      <h1>✅ Vertical Slice completado</h1>
+      <p>POC: Comunicación espiritual + decisión + alteración del entorno.</p>
+      <button id="restart">Reiniciar</button>
+    </div>
+  </div>
+
+  <!-- Tu lógica -->
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
